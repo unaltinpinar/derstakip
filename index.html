@@ -1169,6 +1169,15 @@ const FAR = '2100-01-01';
 const app = document.getElementById('app');
 
 /* ---------- Durum ---------- */
+function etkTemiz(m) {
+  const c = {};
+  if (!m || typeof m !== 'object') return c;
+  for (const [id, e] of Object.entries(m)) {
+    if (!/^[a-z0-9]{6,40}$/.test(id) || !e || typeof e !== 'object') continue;
+    c[id] = { gorulme: Number(e.gorulme) > 0 ? Number(e.gorulme) : 0, mesaj: LGS.kisalt(e.mesaj, 300), mesajZaman: Number(e.mesajZaman) > 0 ? Number(e.mesajZaman) : 0 };
+  }
+  return c;
+}
 function yukle() {
   const j = UI.load(KEY) || {};
   const hedef = j.hedef ? LGS.icerikOku({ format: 'lgs-hedef', kod: 'X', ...j.hedef }) : null;
@@ -1182,7 +1191,8 @@ function yukle() {
     pin: typeof j.pin === 'string' && /^\d{4,8}$/.test(j.pin) ? j.pin : null,
     silinecek: Array.isArray(j.silinecek) ? j.silinecek.filter(x => typeof x === 'string').slice(0, 2000) : [],
     red: Array.isArray(j.red) ? j.red.filter(x => x && typeof x.id === 'string').slice(0, 100).map(x => ({ id: x.id, neden: String(x.neden || '') })) : [],
-    sonSenkron: Number(j.sonSenkron) > 0 ? Number(j.sonSenkron) : 0
+    sonSenkron: Number(j.sonSenkron) > 0 ? Number(j.sonSenkron) : 0,
+    etk: etkTemiz(j.etk)
   };
 }
 const hedefTemiz = x => {
@@ -1234,6 +1244,11 @@ function uygula(j, bek) {
     S.aktarilan = [...new Set(S.aktarilan.concat(gelen.map(o => o.id)))];
   }
   S.hedef = hedefTemiz(j.hedef);
+  if (Array.isArray(j.etkilesim)) {
+    const m = {};
+    for (const e of j.etkilesim) if (e && typeof e.id === 'string') m[e.id] = e;
+    S.etk = etkTemiz(m);
+  }
   if (Array.isArray(j.tanimlar)) S.tanimlar = j.tanimlar.map(LGS.tanimDogrula).filter(Boolean);
   S.sonSenkron = Date.now();
   return kabul.length + (Array.isArray(j.silindi) ? j.silindi.length : 0) + (Array.isArray(j.red) ? j.red.length : 0);
@@ -1261,7 +1276,7 @@ async function esitle(tamIndir) {
     return { hata: sonHata, kod: e.kod };
   } finally {
     esitleniyor = false; durumYaz();
-    if (degisti && (sekme === 'ozet' || sekme === 'aktar' || !S.pin)) { if (!document.activeElement || !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) ciz2(); }
+    if (degisti && (sekme === 'ozet' || sekme === 'gecmis' || sekme === 'aktar' || !S.pin)) { if (!document.activeElement || !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) ciz2(); }
   }
 }
 const esitleSessiz = () => { if (ONLINE && S.kod && S.pin) esitle(false); };
@@ -1489,6 +1504,33 @@ function ozetSekmesi() {
   kap.append(ust, panel);
   return kap;
 }
+const zamanTR = ms => new Date(ms).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+function durumSatiri(o) {
+  const e = S.etk[o.id];
+  if (e && e.gorulme > 0) return h('div', { style: 'color:var(--blue);font-weight:700', text: '✓ Öğretmen gördü · ' + zamanTR(e.gorulme) });
+  if (!S.aktarilan.includes(o.id)) return h('div', { class: 'hint', text: 'Henüz öğretmene gönderilmedi' });
+  return h('div', { class: 'hint', text: 'Henüz görülmedi' });
+}
+function mesajAlani(o) {
+  const e = S.etk[o.id];
+  const gonderildi = S.aktarilan.includes(o.id);
+  const alan = h('textarea', { maxlength: 300, 'aria-label': 'Öğretmene mesaj', value: e && e.mesaj ? e.mesaj : '', placeholder: 'Öğretmene kısa bir mesaj yaz (en fazla 300 karakter)',
+    style: 'width:100%;min-height:70px;border:1.5px solid var(--ink);border-radius:8px;padding:8px' });
+  const gonder = h('button', { class: 'btn kucuk', type: 'button', text: 'Mesajı gönder', disabled: !gonderildi, onClick: async () => {
+    const m = alan.value.trim();
+    if (!m) return UI.toast('Önce bir mesaj yaz');
+    gonder.disabled = true;
+    try {
+      const j = await Sunucu.cagri({ islem: 'mesaj', kod: S.kod, pin: S.pin, id: o.id, mesaj: m });
+      S.etk[o.id] = etkTemiz({ [o.id]: j.etkilesim })[o.id] || { gorulme: 0, mesaj: m, mesajZaman: Date.now() };
+      kaydet(); UI.toast('Mesajın öğretmene gönderildi'); ciz2();
+    } catch (x) { gonder.disabled = false; UI.toast(x.message); }
+  } });
+  return h('details', null,
+    h('summary', { text: e && e.mesaj ? 'Mesajım (' + zamanTR(e.mesajZaman) + ')' : 'Öğretmene mesaj bırak' }),
+    gonderildi ? null : h('div', { class: 'hint', text: 'Kayıt sunucuya gönderilince mesaj bırakabilirsin; Aktar sekmesinden "Şimdi eşitle" de.' }),
+    alan, h('div', { class: 'toolbar', style: 'margin-top:6px' }, gonder));
+}
 function gecmisSekmesi() {
   const liste = LGS.sirala(S.oturumlar).reverse();
   if (!liste.length) return Panel.kart('Geçmiş', h('p', { class: 'bos', text: 'Henüz kayıt yok. Giriş sekmesinden ilk çalışmanı ekle.' }));
@@ -1497,8 +1539,9 @@ function gecmisSekmesi() {
     const baslik = o.tur === 'deneme' ? 'Deneme · ' + o.ad : LGS.dersBul(o.bolumler[0].ders).ad + ' · ' + o.bolumler[0].konu;
     const detay = o.hatalar.length ? h('details', null, h('summary', { text: o.hatalar.length + ' hatalı/boş soru' }),
       h('div', null, o.hatalar.map(x => h('span', { class: 'chip', text: LGS.dersBul(x.ders).ad.split(' ')[0] + (x.no ? ' ' + x.no : '') + ' · ' + (x.sonuc === 'y' ? 'Y' : 'B') + ' · ' + LGS.nedenAd(x.neden) })))) : null;
+    const mesajKutusu = ONLINE ? mesajAlani(o) : null;
     return h('li', null,
-      h('div', null, h('strong', { text: baslik }), h('div', { class: 'hint', text: LGS.tarihTR(o.tarih) + ' · ' + ds.d + 'D ' + ds.y + 'Y ' + ds.b + 'B · net ' + LGS.fmt(LGS.net(ds.d, ds.y)) + (o.sure ? ' · ' + o.sure + ' dk' : '') }), detay),
+      h('div', { style: 'flex:1 1 300px;min-width:0' }, h('strong', { text: baslik }), ONLINE ? durumSatiri(o) : null, h('div', { class: 'hint', text: LGS.tarihTR(o.tarih) + ' · ' + ds.d + 'D ' + ds.y + 'Y ' + ds.b + 'B · net ' + LGS.fmt(LGS.net(ds.d, ds.y)) + (o.sure ? ' · ' + o.sure + ' dk' : '') }), detay, mesajKutusu),
       h('button', { class: 'btn kucuk tehlike', type: 'button', text: 'Sil', 'aria-label': baslik + ' kaydını sil', onClick: () => {
         if (confirm('Bu kayıt silinsin mi?\n' + baslik + ' · ' + LGS.tarihTR(o.tarih))) { S.oturumlar = S.oturumlar.filter(x => x.id !== o.id); S.aktarilan = S.aktarilan.filter(x => x !== o.id); if (ONLINE) S.silinecek.push(o.id); kaydet(); ciz2(); esitleSessiz(); }
       } }));
@@ -1530,7 +1573,7 @@ function sunucuKarti() {
     const kalan = bekleyenSayi();
     const m = kalan ? kalan + ' kayıt HENÜZ sunucuya gönderilemedi ve bu cihazdan silinirse kaybolacak. Yine de çıkılsın mı?' : 'Bu cihazdaki veriler silinecek (kayıtların sunucuda duruyor). Çıkış yapılsın mı?';
     if (!confirm(m)) return;
-    S = { kod: null, oturumlar: [], hedef: null, tanimlar: [], aktarilan: [], sonAktarim: null, pin: null, silinecek: [], red: [], sonSenkron: 0 };
+    S = { kod: null, oturumlar: [], hedef: null, tanimlar: [], aktarilan: [], sonAktarim: null, pin: null, silinecek: [], red: [], sonSenkron: 0, etk: {} };
     kaydet(); sekme = 'giris'; ciz2();
   } });
   return Panel.kart('Sunucu eşitleme', bilgi, h('p', { class: 'hint', text: son }), redKap,
@@ -1575,7 +1618,7 @@ function aktarSekmesi() {
     Panel.kart('Öğretmenden gelen dosyayı yükle', h('p', { class: 'hint', text: 'Hedef, deneme tanımı veya kendi yedek dosyanı seç. Birden fazla dosya seçebilirsin.' }), dosya, sonuc),
     Panel.kart('Verileri sil', h('p', { class: 'hint', text: 'Bu cihazdaki tüm kayıtlar ve öğrenci kodu silinir. Önce dosyayı indirmeyi unutma.' }),
       h('button', { class: 'btn tehlike', type: 'button', text: 'Tüm verileri sil', onClick: () => {
-        if (confirm('Bu cihazdaki TÜM veriler silinecek. Emin misin?') && confirm('Son kez soruyorum: silinsin mi?')) { S = { kod: null, oturumlar: [], hedef: null, tanimlar: [], aktarilan: [], sonAktarim: null, pin: null, silinecek: [], red: [], sonSenkron: 0 }; kaydet(); sekme = 'giris'; ciz2(); }
+        if (confirm('Bu cihazdaki TÜM veriler silinecek. Emin misin?') && confirm('Son kez soruyorum: silinsin mi?')) { S = { kod: null, oturumlar: [], hedef: null, tanimlar: [], aktarilan: [], sonAktarim: null, pin: null, silinecek: [], red: [], sonSenkron: 0, etk: {} }; kaydet(); sekme = 'giris'; ciz2(); }
       } })));
 }
 
@@ -1593,7 +1636,7 @@ function kurulum() {
     if (!ONLINE) { S.kod = k; kaydet(); return ciz2(); }
     if (!/^\d{4,8}$/.test(pin.value)) return UI.hataKutusu(hata, ['PIN 4–8 haneli rakamlardan oluşmalı']);
     UI.hataKutusu(hata, []);
-    if (S.kod && S.kod !== k) S = { kod: null, oturumlar: [], hedef: null, tanimlar: [], aktarilan: [], sonAktarim: null, pin: null, silinecek: [], red: [], sonSenkron: 0 };
+    if (S.kod && S.kod !== k) S = { kod: null, oturumlar: [], hedef: null, tanimlar: [], aktarilan: [], sonAktarim: null, pin: null, silinecek: [], red: [], sonSenkron: 0, etk: {} };
     S.kod = k; S.pin = pin.value;
     dugme.disabled = true; dugme.textContent = 'Bağlanıyor…';
     const r = await esitle(true);
