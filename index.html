@@ -252,6 +252,7 @@ function oturumDogrula(o, ref) {
   if (o.sure != null && !(isInt(o.sure) && o.sure > 0 && o.sure <= 600)) e.push('Süre 1–600 dakika arasında olmalı');
   if (!Array.isArray(o.bolumler) || !o.bolumler.length) { e.push('Ders bölümü yok'); return e; }
   if (!Array.isArray(o.hatalar)) { e.push('Hata listesi yok'); return e; }
+  if (o.hizli && (o.tur !== 'deneme' || o.ekleyen !== 'ogretmen' || o.hatalar.length || o.bolumler.some(b => b && b.konular))) e.push('Hızlı giriş geçersiz');
   if (o.tur === 'konu' && o.bolumler.length !== 1) e.push('Konu çalışması tek ders içermeli');
   if (o.tur === 'deneme' && o.bolumler.length !== DERSLER.length) e.push('Denemede altı dersin de sonucu girilmeli');
   const gorulen = new Set();
@@ -267,6 +268,7 @@ function oturumDogrula(o, ref) {
     if (b.d + b.y + b.b !== b.soru) e.push(ad + ': doğru + yanlış + boş = ' + (b.d + b.y + b.b) + ', soru sayısı ' + b.soru);
     if (o.tur === 'deneme' && b.soru !== ders.soru) e.push(ad + ': denemede ' + ders.soru + ' soru olmalı');
     if (o.tur === 'konu' && (typeof b.konu !== 'string' || !b.konu)) e.push(ad + ': konu seçilmemiş');
+    if (o.hizli) continue; // hızlı giriş: yalnızca doğru/yanlış sayısı, soru satırı yok
     const hs = o.hatalar.filter(h => h && h.ders === ders.id);
     const hy = hs.filter(h => h.sonuc === 'y').length;
     const hb = hs.filter(h => h.sonuc === 'b').length;
@@ -313,6 +315,8 @@ function temizOturum(o, ref) {
       no: h && h.no != null ? Number(h.no) : null, sonuc: h && h.sonuc, neden: h && h.neden != null ? h.neden : null
     }))
   };
+  if (o.ekleyen === 'ogretmen') c.ekleyen = 'ogretmen';
+  if (o.hizli === true) c.hizli = true;
   return oturumDogrula(c, ref).length ? null : c;
 }
 
@@ -1856,6 +1860,13 @@ function uygula(j, bek) {
     S.oturumlar = m.oturumlar;
     S.aktarilan = [...new Set(S.aktarilan.concat(gelen.map(o => o.id)))];
   }
+  if (Array.isArray(j.ogretmenKayitlari)) {
+    const og = j.ogretmenKayitlari.map(o => LGS.temizOturum(o, FAR)).filter(Boolean);
+    const ids = new Set(og.map(o => o.id));
+    const eskiIds = new Set(S.oturumlar.filter(o => o.ekleyen === 'ogretmen').map(o => o.id));
+    S.oturumlar = S.oturumlar.filter(o => o.ekleyen !== 'ogretmen' && !ids.has(o.id)).concat(og);
+    S.aktarilan = [...new Set(S.aktarilan.filter(x => !eskiIds.has(x) || ids.has(x)).concat([...ids]))];
+  }
   S.hedef = hedefTemiz(j.hedef);
   if (Array.isArray(j.etkilesim)) {
     const m = {};
@@ -2087,6 +2098,8 @@ function denemeFormu() {
     const o = { id: LGS.uid(), tarih: G.tarih, tur: 'deneme', kaynak: '', ad: G.ad.trim(), tanimId: tanim ? tanim.id : null, sure: sureN, not: G.not, bolumler, hatalar };
     const c = LGS.temizOturum(o, yarin());
     if (!c) return UI.hataKutusu(hata, [...new Set(LGS.oturumDogrula(o, yarin()))]);
+    const ayni = S.oturumlar.find(x => x.tur === 'deneme' && ((c.tanimId && x.tanimId === c.tanimId) || x.tarih === c.tarih || x.ad.toLocaleLowerCase('tr') === c.ad.toLocaleLowerCase('tr')));
+    if (ayni && !confirm('Benzer bir deneme zaten kayıtlı:\n' + ayni.ad + ' · ' + LGS.tarihTR(ayni.tarih) + (ayni.ekleyen === 'ogretmen' ? ' (öğretmen ekledi)' : '') + '\n\nYine de kaydedilsin mi?')) return;
     S.oturumlar.push(c); kaydet(); esitleSessiz();
     const dl = LGS.denemeListesi([c])[0];
     UI.toast('Deneme kaydedildi: net ' + LGS.fmt(dl.net));
@@ -2120,6 +2133,7 @@ function ozetSekmesi() {
 const zamanTR = ms => new Date(ms).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 function durumSatiri(o) {
   const e = S.etk[o.id];
+  if (o.ekleyen === 'ogretmen' && !(e && e.mesaj)) return null;
   if (e && e.gorulme > 0) return h('div', { style: 'color:var(--blue);font-weight:700', text: '✓ Öğretmen gördü · ' + zamanTR(e.gorulme) });
   if (!S.aktarilan.includes(o.id)) return h('div', { class: 'hint', text: 'Henüz öğretmene gönderilmedi' });
   return h('div', { class: 'hint', text: 'Henüz görülmedi' });
@@ -2154,8 +2168,8 @@ function gecmisSekmesi() {
       h('div', null, o.hatalar.map(x => h('span', { class: 'chip', text: LGS.dersBul(x.ders).ad.split(' ')[0] + (x.no ? ' ' + x.no : '') + ' · ' + (x.sonuc === 'y' ? 'Y' : 'B') + ' · ' + LGS.nedenAd(x.neden) })))) : null;
     const mesajKutusu = ONLINE ? mesajAlani(o) : null;
     return h('li', null,
-      h('div', { style: 'flex:1 1 300px;min-width:0' }, h('strong', { text: baslik }), ONLINE ? durumSatiri(o) : null, h('div', { class: 'hint', text: LGS.tarihTR(o.tarih) + ' · ' + ds.d + 'D ' + ds.y + 'Y ' + ds.b + 'B · net ' + LGS.fmt(LGS.net(ds.d, ds.y)) + (o.sure ? ' · ' + o.sure + ' dk' : '') }), detay, mesajKutusu),
-      h('button', { class: 'btn kucuk tehlike', type: 'button', text: 'Sil', 'aria-label': baslik + ' kaydını sil', onClick: () => {
+      h('div', { style: 'flex:1 1 300px;min-width:0' }, h('strong', { text: baslik }), o.ekleyen === 'ogretmen' ? h('span', { class: 'chip', style: 'margin-left:8px', text: 'Öğretmen ekledi' + (o.hizli ? ' · hızlı giriş' : '') }) : null, ONLINE ? durumSatiri(o) : null, h('div', { class: 'hint', text: LGS.tarihTR(o.tarih) + ' · ' + ds.d + 'D ' + ds.y + 'Y ' + ds.b + 'B · net ' + LGS.fmt(LGS.net(ds.d, ds.y)) + (o.sure ? ' · ' + o.sure + ' dk' : '') }), detay, mesajKutusu),
+      o.ekleyen === 'ogretmen' ? null : h('button', { class: 'btn kucuk tehlike', type: 'button', text: 'Sil', 'aria-label': baslik + ' kaydını sil', onClick: () => {
         if (confirm('Bu kayıt silinsin mi?\n' + baslik + ' · ' + LGS.tarihTR(o.tarih))) { S.oturumlar = S.oturumlar.filter(x => x.id !== o.id); S.aktarilan = S.aktarilan.filter(x => x !== o.id); if (ONLINE) S.silinecek.push(o.id); kaydet(); ciz2(); esitleSessiz(); }
       } }));
   })));
